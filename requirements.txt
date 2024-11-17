@@ -1,0 +1,3 @@
+substrate-interface == 1.7.11
+py-ed25519-zebra-bindings == 1.0.1
+pyyaml

@@ -1,0 +1,35 @@
+polkadot:
+  rpc:
+    - wss://polkadot.rpc.amforc.com
+  spam_wallet_count: 12000
+  spam_wallet_min_distr_amount: 2
+  fee: 0.0161
+  spam_wallet_min_balance: 1.4
+  # blocks_to_spam: 1 # Comment out for to run until runninng out of funds
+
+kusama:
+  rpc:
+    - wss://kusama.rpc.amforc.com
+  spam_wallet_count: 12000
+  spam_wallet_min_distr_amount: 0.1
+  spam_wallet_min_balance: 0.1
+  fee: 0.0006
+  # blocks_to_spam: 1 # Comment out for to run until runninng out of funds
+
+westend:
+  rpc:
+    - wss://westend.rpc.amforc.com
+  spam_wallet_count: 100
+  spam_wallet_min_distr_amount: 0.3
+  spam_wallet_min_balance: 0.1
+  fee: 0.016041
+  # blocks_to_spam: 1 # Comment out for to run until runninng out of funds
+
+paseo:
+  rpc:
+    - wss://paseo.rpc.amforc.com
+  spam_wallet_count: 12000
+  spam_wallet_min_distr_amount: 3
+  spam_wallet_min_balance: 1.6
+  fee: 0.0161
+  # blocks_to_spam: 1 # Comment out for to run until runninng out of funds
