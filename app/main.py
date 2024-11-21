@@ -4,8 +4,13 @@ import argparse
 import yaml
 from pathlib import Path
 from typing import Dict, Any
-from utils import generate_mnemonic
-from spammening import start_spammening, collect_spam_accounts, distribute_spam_accounts
+from utils import generate_mnemonic, tmp_fix_wallet
+from spammening import (
+    start_spammening,
+    collect_spam_accounts,
+    distribute_spam_accounts,
+    return_start_wallet_funds,
+)
 
 
 def load_config(network: str) -> Dict[str, Any]:
@@ -39,10 +44,13 @@ def main(args):
         case "spam":
             start_spammening(config)
         case "collect":
-            collect_spam_accounts(config["spam_wallet_count"], config["rpc"][0])
+            collect_spam_accounts(config)
         case "distribute":
             distribute_spam_accounts(config)
-            pass
+        case "return_funds":
+            return_start_wallet_funds(config)
+        case "fix":
+            tmp_fix_wallet(config)
     pass
 
 
@@ -61,7 +69,7 @@ if __name__ == "__main__":
         "--action",
         help="The action to do",
         default="spam",
-        choices=["spam", "create_addr", "collect", "distribute"],
+        choices=["spam", "create_addr", "collect", "distribute", "return_funds", "fix"],
     )
 
     args = parser.parse_args()

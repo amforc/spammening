@@ -1,3 +1,4 @@
+import copy
 import json
 import logging
 import random
@@ -5,6 +6,7 @@ import time
 import sys
 import threading
 from hashlib import blake2b
+from unittest import skip
 from scalecodec.base import ScaleBytes
 from substrateinterface import SubstrateInterface, Keypair
 from substrateinterface.storage import StorageKey
@@ -17,11 +19,12 @@ NEW_BLOCK = 0
 
 
 def update_balances(accounts: dict, rpcurl: str) -> None:
-    logging.info("Start Thread to update balances")
     global BALANCES_LIST
+    logging.info("Start Thread to update balances")
     sbstr = SubstrateInterface(url=rpcurl)
-
     sbstr.init_runtime()
+
+    _last_used_block = 0
     while True:
         try:
             tnow = time.time()
@@ -47,20 +50,20 @@ def update_balances(accounts: dict, rpcurl: str) -> None:
                 clean_balances[result[0].params[0]] = {
                     "balance": result[1]["data"]["free"].decode(),
                     "nonce": result[1]["nonce"].decode(),
+                    "sent": 0,
+                    "received": 0,
                 }
 
             with DATA_LOCK:
+                _last_used_block = NEW_BLOCK
                 if BALANCES_LIST:
-                    for acc, info in BALANCES_LIST.items():
-                        info["balance"] = clean_balances[acc]["balance"]
-                else:
                     for acc, info in clean_balances.items():
-                        BALANCES_LIST[acc] = {
-                            "balance": info["balance"],
-                            "nonce": info["nonce"],
-                        }
+                        BALANCES_LIST[acc]["balance"] = info["balance"]
+                else:
+                    BALANCES_LIST = copy.deepcopy(clean_balances)
 
             updateglobaltime = time.time() - tnow
+
         except Exception as e:
             logging.error(f"Error: {e}")
             sbstr = SubstrateInterface(url=rpcurl)
@@ -69,12 +72,18 @@ def update_balances(accounts: dict, rpcurl: str) -> None:
         logging.info(
             f"BALANCE UPDATE -- StorageKeys:{storagetime:.2f}s - Query:{querytime:.2f}s - GlobalVar:{updateglobaltime:.2f}s"
         )
-        time.sleep(6)
+
+        while True:
+            with DATA_LOCK:
+                _new_block = NEW_BLOCK
+
+            if _last_used_block == _new_block:
+                time.sleep(0.2)
+            else:
+                break
 
 
 def start_balances_list(balance_list: dict, rpcurl, start_wallet=None):
-    global BALANCES_LIST
-
     if start_wallet:
         balance_list[start_wallet] = {
             "balance": None,
@@ -86,9 +95,15 @@ def start_balances_list(balance_list: dict, rpcurl, start_wallet=None):
     )
     balance_thread.start()
 
-    while not BALANCES_LIST:
-        logging.info(f"Balance not updated yet. Waiting")
-        time.sleep(2)
+    while True:
+        with DATA_LOCK:
+            _balance_list = BALANCES_LIST
+
+        if not _balance_list:
+            logging.info(f"Balance not updated yet. Waiting")
+            time.sleep(2)
+        else:
+            break
 
 
 def start_block_subscription(rpcurl: str):
@@ -96,6 +111,16 @@ def start_block_subscription(rpcurl: str):
         target=subscribe_blocks, args=(rpcurl,), daemon=True
     )
     block_thread.start()
+
+    while True:
+        with DATA_LOCK:
+            _new_block = NEW_BLOCK
+
+        if not _new_block:
+            logging.info(f"Wait for first new block")
+            time.sleep(2)
+        else:
+            break
 
 
 def subscribe_blocks(rpcurl: str):
@@ -107,7 +132,8 @@ def subscribe_blocks(rpcurl: str):
 def new_block(obj, update_nr, subscription_id):
     global NEW_BLOCK
     logging.info(f"New block: #{obj['header']['number']}")
-    NEW_BLOCK = int(obj["header"]["number"])
+    with DATA_LOCK:
+        NEW_BLOCK = int(obj["header"]["number"])
 
 
 def fast_compose_call(
@@ -301,6 +327,7 @@ def prepare_distribute(
     substrate: SubstrateInterface,
     config: dict,
 ):
+    global BALANCES_LIST
     min_per_recipient = (
         config["spam_wallet_min_distr_amount"] * 10**substrate.token_decimals
     )
@@ -311,8 +338,9 @@ def prepare_distribute(
     with DATA_LOCK:
         start_balance = BALANCES_LIST[start_wallet.ss58_address]["balance"]
 
-    total_fee = fee * number_of_recipients
-    available_balance = start_balance - (20 * 10**substrate.token_decimals) - total_fee
+    total_fee = int(fee * number_of_recipients)
+    wallet_reserve = int(5 * 10**substrate.token_decimals)
+    available_balance = start_balance - wallet_reserve - total_fee
 
     if available_balance <= 0:
         logging.error("No available balance to distribute")
@@ -363,44 +391,115 @@ def prepare_shuffle(
     genesis_hash,
     config: dict,
 ):
+    global BALANCES_LIST
+
     min_balance = config["spam_wallet_min_balance"] * 10**substrate.token_decimals
     fee = config["fee"] * 10**substrate.token_decimals
 
-    shuffle_accounts = accounts.copy()
-    random.shuffle(shuffle_accounts)
-    if len(shuffle_accounts) % 2:
-        shuffle_accounts.pop()
+    _balance_list = {}
+    with DATA_LOCK:
+        for acc in accounts:
+            _balance_list[acc.ss58_address] = BALANCES_LIST[acc.ss58_address].copy()
 
-    min_send = 10000000
+    _tmp_list = _balance_list.copy()
+    acc_c = int(len(accounts) / 2)
+
+    top_sent = sorted(_tmp_list.items(), key=lambda x: x[1]["sent"], reverse=True)[
+        :acc_c
+    ]
+
+    for key, _ in top_sent:
+        _tmp_list.pop(key)
+
+    top_received = sorted(
+        _tmp_list.items(), key=lambda x: x[1]["received"], reverse=True
+    )[:acc_c]
+    # min_send = 10000000
+    min_send = 1000
+    extrinsics = []
+    update_nonce_for = []
+
+    while top_received:
+        sender, recipient = top_received.pop(), top_sent.pop()
+        se_ba = sender[1]["balance"]
+
+        if se_ba < min_balance + min_send + fee:
+            logging.warning(f"Balance to small - Account: {sender[0]}")
+            continue
+
+        # Divide by 20 because balance list might be couple blocks behind and potential latency issues
+        # max_send = int((se_ba - min_balance - fee) // 20)
+        max_send = int(min_send * 2)
+        # Because of the //20
+        if max_send < min_send:
+            max_send = min_send
+
+        amount = random.randint(min_send, max_send)
+        sender_kp = next((kp for kp in accounts if kp.ss58_address == sender[0]), None)
+
+        call = transfer_to(recipient[0], amount, substrate)
+        extrinsics.append(
+            fast_create_signed_extrinsic(
+                call=call,
+                signer=sender_kp,
+                genesis_hash=genesis_hash,
+                substrate=substrate,
+                signer_nonce=sender[1]["nonce"],
+            )
+        )
+        update_nonce_for.append({"sender": sender, "receiver": recipient})
+
+    with DATA_LOCK:
+        for transfer in update_nonce_for:
+            BALANCES_LIST[transfer["sender"][0]]["nonce"] += 1
+            BALANCES_LIST[transfer["sender"][0]]["sent"] += 1
+            BALANCES_LIST[transfer["receiver"][0]]["received"] += 1
+            pass
+    return extrinsics
+
+
+def prepare_rmrk(
+    accounts: list[Keypair], substrate: SubstrateInterface, rmrk: str, genesis_hash: str
+):
+    call = fast_compose_call(
+        call_module="System",
+        call_function="remark",
+        call_params={"remark": rmrk},
+        substrate=substrate,
+    )
+    global BALANCES_LIST
+
+    _balance_list = {}
+    with DATA_LOCK:
+        for acc in accounts:
+            _balance_list[acc.ss58_address] = BALANCES_LIST[acc.ss58_address].copy()
 
     extrinsics = []
-    with DATA_LOCK:
-        while shuffle_accounts:
-            sender, recipient = shuffle_accounts.pop(), shuffle_accounts.pop()
-            se_ba = BALANCES_LIST[sender.ss58_address]["balance"]
-            re_ba = BALANCES_LIST[recipient.ss58_address]["balance"]
-            if se_ba < re_ba:
-                sender, recipient = recipient, sender
-            if se_ba < min_balance + min_send + fee:
-                logging.warning(f"Balance to small - Account: {sender.ss58_address}")
-                continue
+    update_nonce_for = []
+    skip_item = False
+    for acc, item in _balance_list.items():
+        if skip_item:
+            skip_item = False
+            continue
 
-            # Divide by 20 because balance list might be couple blocks behind and potential latency issues
-            max_send = int((se_ba - min_balance - fee) // 20)
-            # max_send = int(fee) * 5
-            amount = random.randint(min_send, max_send)
-            recipient_public_key = "0x" + recipient.public_key.hex()
-            call = transfer_to(recipient_public_key, amount, substrate)
-            extrinsics.append(
-                fast_create_signed_extrinsic(
-                    call=call,
-                    signer=sender,
-                    genesis_hash=genesis_hash,
-                    substrate=substrate,
-                    signer_nonce=BALANCES_LIST[sender.ss58_address]["nonce"],
-                )
+        acc_kp = next((kp for kp in accounts if kp.ss58_address == acc), None)
+        extrinsics.append(
+            fast_create_signed_extrinsic(
+                call=call,
+                signer=acc_kp,
+                genesis_hash=genesis_hash,
+                substrate=substrate,
+                signer_nonce=item["nonce"],
             )
-            BALANCES_LIST[sender.ss58_address]["nonce"] += 1
+        )
+
+        update_nonce_for.append(acc)
+        skip_item = True
+
+    with DATA_LOCK:
+        for acc in update_nonce_for:
+            BALANCES_LIST[acc]["nonce"] += 1
+
     return extrinsics
 
 
@@ -428,14 +527,17 @@ def prepare_collect(accounts: list[Keypair], end_wallet, substrate, genesis_hash
     return extrinsics
 
 
-def collect_spam_accounts(wallet_count: int, rpcurl: str):
-    substr = SubstrateInterface(url=rpcurl)
+def collect_spam_accounts(config: dict):
+    substr = SubstrateInterface(url=config["rpc"][0])
     substr.init_runtime()
 
     start_wallet = get_start_wallet(substr.ss58_format)
-    accounts, balance_list = get_spam_wallets(substr.ss58_format, wallet_count)
+    accounts, balance_list = get_spam_wallets(
+        substr.ss58_format, config["spam_wallet_count"], config["derivation"]
+    )
 
-    start_balances_list(balance_list, rpcurl, start_wallet.ss58_address)
+    start_block_subscription(config["rpc"][0])
+    start_balances_list(balance_list, config["rpc"][0], start_wallet.ss58_address)
 
     collecting_extrinsics = prepare_collect(
         accounts, start_wallet, substr, substr.get_block_hash(0)
@@ -454,12 +556,32 @@ def collect_spam_accounts(wallet_count: int, rpcurl: str):
             count = 0
 
     logging.info(f"Submitted {len(collecting_extrinsics)} collecting extrinsics")
+    time.sleep(18)  # Wait to make sure everything gets onchain
+    count = count_funded_spam_acc(BALANCES_LIST, wallet=start_wallet)
+    # if count > 0:
+    #     logging.info(
+    #         f"{count_funded_spam_acc(BALANCES_LIST, wallet=start_wallet)} spam accounts are STILL funded - sending some token"
+    #     )
+    #     with DATA_LOCK:
+    #         for account in accounts:
+    #             acc_balance = BALANCES_LIST[account.ss58_address]
+    #             if acc_balance["balance"] > 0:
+    #                 call = substr.compose_call(
+    #                     call_module="Balances",
+    #                     call_function="transfer_keep_alive",
+    #                     call_params={
+    #                         "dest": account.ss58_address,
+    #                         "value": config["spam_wallet_min_balance"]
+    #                         * 10**substr.token_decimals,
+    #                     },
+    #                 )
 
-    if count > 0:
-        time.sleep(12)  # Wait to make sure everything gets onchain
-        logging.info(
-            f"{count_funded_spam_acc(BALANCES_LIST, wallet=start_wallet)} spam accounts are STILL funded"
-        )
+    #                 extrinsic = substr.create_signed_extrinsic(
+    #                     call=call, keypair=start_wallet
+    #                 )
+    #                 substr.submit_extrinsic(extrinsic, wait_for_inclusion=True)
+
+    #     time.sleep(12)
 
 
 def distribute_spam_accounts(config: dict):
@@ -468,9 +590,10 @@ def distribute_spam_accounts(config: dict):
 
     start_wallet = get_start_wallet(substr.ss58_format)
     accounts, balance_list = get_spam_wallets(
-        substr.ss58_format, config["spam_wallet_count"]
+        substr.ss58_format, config["spam_wallet_count"], config["derivation"]
     )
 
+    start_block_subscription(config["rpc"][0])
     start_balances_list(balance_list, config["rpc"][0], start_wallet.ss58_address)
     distribution_extrinsics = prepare_distribute(start_wallet, accounts, substr, config)
 
@@ -500,20 +623,65 @@ def distribute_spam_accounts(config: dict):
     )
 
 
-def start_spam_thread(
-    accounts: dict[Keypair],
+def return_start_wallet_funds(config: dict):
+    substr = SubstrateInterface(url=config["rpc"][0])
+    start_wallet = get_start_wallet(substr.ss58_format)
+
+    call = substr.compose_call(
+        call_module="Balances",
+        call_function="transfer_all",
+        call_params={"dest": config["cold_wallet"], "keep_alive": False},
+    )
+    extrinsic = substr.create_signed_extrinsic(call=call, keypair=start_wallet)
+    substr.submit_extrinsic(extrinsic)
+
+
+def send_rmrk(
+    rmrk: str, substrate: SubstrateInterface, accounts: list[Keypair], genesis_hash: str
+):
+    with DATA_LOCK:
+        _last_block = NEW_BLOCK
+        _new_block = NEW_BLOCK
+
+    extrinsics = prepare_rmrk(accounts, substrate, rmrk, genesis_hash)
+
+    while True:
+        if _last_block == _new_block:
+            time.sleep(0.1)
+        else:
+            break
+
+        with DATA_LOCK:
+            _new_block = NEW_BLOCK
+
+    for extrinsic in extrinsics:
+        fast_submit_extrinsic(extrinsic, substrate)
+
+    logging.info(f"RMRK -- Submitted rmrks")
+
+
+def spam_thread(
+    accounts: list[Keypair],
     config: dict,
     threadcount: int,
     genesis_hash,
     substr: SubstrateInterface,
 ):
     iteration = 0
-    _last_block = NEW_BLOCK
     max_iteration = config.get("blocks_to_spam", None)
+
+    logging.info(f"Thread {threadcount} -- Start Shuffle")
+
+    if config.get("rmrk", None):
+        send_rmrk(config["rmrk"], substr, accounts, genesis_hash)
+
+    with DATA_LOCK:
+        _last_block = NEW_BLOCK
+        _new_block = NEW_BLOCK
+
     while True:
         now = time.time()
 
-        logging.info(f"Thread {threadcount} -- Start Shuffle")
         shuffling_extrinsics = prepare_shuffle(accounts, substr, genesis_hash, config)
         shuffle_prep = time.time() - now
 
@@ -521,14 +689,20 @@ def start_spam_thread(
             logging.info(f"Thread {threadcount} -- No Funds left to spam")
             break
 
-        while _last_block == NEW_BLOCK:
-            time.sleep(0.01)
+        while True:
+            if _last_block == _new_block:
+                time.sleep(0.1)
+            else:
+                break
+
+            with DATA_LOCK:
+                _new_block = NEW_BLOCK
 
         now = time.time()
         for extrinsic in shuffling_extrinsics:
             fast_submit_extrinsic(extrinsic, substr)
 
-        _last_block = NEW_BLOCK
+        _last_block = _new_block
         iteration += 1
 
         tsubmit_extr = time.time() - now
@@ -558,22 +732,23 @@ def start_spammening(config: dict):
         substrates.append(sub)
 
     genesis_hash = substrates[0].get_block_hash(0)
-
     spam_accounts, balance_list = get_spam_wallets(
-        substrates[0].ss58_format, config["spam_wallet_count"]
+        substrates[0].ss58_format, config["spam_wallet_count"], config["derivation"]
     )
 
-    start_balances_list(balance_list, config["rpc"][0])
-    start_block_subscription(config["rpc"][0])
-    logging.info(f"{count_funded_spam_acc(BALANCES_LIST)} spam accounts are funded")
+    start_block_subscription(config["subscription_rpc"])
+    start_balances_list(balance_list, config["subscription_rpc"])
+
+    with DATA_LOCK:
+        logging.info(f"{count_funded_spam_acc(BALANCES_LIST)} spam accounts are funded")
 
     split_accounts = split_list(spam_accounts, len(config["rpc"]))
 
-    # start_spam_thread(split_accounts[0], config, 0, genesis_hash, substrates[0])
+    # spam_thread(split_accounts[0], config, 0, genesis_hash, substrates[0])
     spam_threads = []
     for index, spa in enumerate(split_accounts):
         sp_thread = threading.Thread(
-            target=start_spam_thread,
+            target=spam_thread,
             args=(spa, config, index, genesis_hash, substrates[index]),
             daemon=True,
         )

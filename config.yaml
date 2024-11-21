@@ -1,28 +1,59 @@
 polkadot:
+  subscription_rpc: wss://polkadot.rpc.amforc.com
   rpc:
     - wss://polkadot.rpc.amforc.com
   spam_wallet_count: 12000
   spam_wallet_min_distr_amount: 2
-  fee: 0.0161
   spam_wallet_min_balance: 1.4
+  cold_wallet: 133ZQTsbzVLFsXotS3U2twGyiWfGiCwQrTbnxfZLbQa5UeRW
+  fee: 0.0161
+  rmrk: "Amforc sends their regards"
   # blocks_to_spam: 1 # Comment out for to run until runninng out of funds
 
 kusama:
+  subscription_rpc: wss://kusama-rpc.dwellir.com
   rpc:
-    - wss://kusama.rpc.amforc.com
+    - ws://zur1-vm-rpcksm-001.amforc.com:9944
+    - ws://zur1-vm-rpcksm-002.amforc.com:9944
+    - ws://zur1-vm-rpcksm-003.amforc.com:9944
+    - ws://zur1-vm-rpcksm-004.amforc.com:9944
+    - ws://zur1-vm-rpcksm-005.amforc.com:9944
+    - ws://zur1-vm-rpcksm-006.amforc.com:9944
+    - ws://zur1-vm-rpcksm-007.amforc.com:9944
+    - ws://zur1-vm-rpcksm-008.amforc.com:9944
+    - ws://zur1-vm-rpcksm-009.amforc.com:9944
+    - ws://zur1-vm-rpcksm-010.amforc.com:9944
+    - ws://zur1-vm-rpcksm-011.amforc.com:9944
+    - ws://zur1-vm-rpcksm-012.amforc.com:9944
+    - ws://zur1-vm-rpcksm-013.amforc.com:9944
+    - ws://zur1-vm-rpcksm-014.amforc.com:9944
+    - ws://zur1-vm-rpcksm-015.amforc.com:9944
+    - ws://zur1-vm-rpcksm-016.amforc.com:9944
+    - ws://zur1-vm-rpcksm-017.amforc.com:9944
+    - ws://zur1-vm-rpcksm-018.amforc.com:9944
+    - ws://zur1-vm-rpcksm-019.amforc.com:9944
+    - ws://zur1-vm-rpcksm-020.amforc.com:9944
   spam_wallet_count: 12000
-  spam_wallet_min_distr_amount: 0.1
-  spam_wallet_min_balance: 0.1
+  spam_wallet_min_distr_amount: 0.05
+  spam_wallet_min_balance: 0.002
+  cold_wallet: E5tfZAP7JUkqrYNQk9PNbZr8R83KNheoEnbjtqRSKjE5VCF
   fee: 0.0006
-  # blocks_to_spam: 1 # Comment out for to run until runninng out of funds
+  derivation: 1
+  # rmrk: "Amforc sends their regards"
+  # blocks_to_spam: 2 # Comment out for to run until runninng out of funds
 
 westend:
+  subscription_rpc: ws://zur1-vm-rpcwnd-001.amforc.com:9944
   rpc:
-    - wss://westend.rpc.amforc.com
-  spam_wallet_count: 100
-  spam_wallet_min_distr_amount: 0.3
+    - ws://zur1-vm-rpcwnd-001.amforc.com:9944
+    - ws://zur1-vm-rpcwnd-001.amforc.com:9944
+  spam_wallet_count: 12000
+  # spam_wallet_min_distr_amount: 0.3
+  spam_wallet_min_distr_amount: 2
   spam_wallet_min_balance: 0.1
+  cold_wallet: 5ChyjqCv7HKWLa77vDedMyXteF2L3YBrE7zJjTt2DMbKncgM
   fee: 0.016041
+  # rmrk: "Amforc sends their regards"
   # blocks_to_spam: 1 # Comment out for to run until runninng out of funds
 
 paseo:
