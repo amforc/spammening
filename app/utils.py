@@ -1,6 +1,6 @@
 import os
 import logging
-from substrateinterface import Keypair
+from substrateinterface import Keypair, SubstrateInterface
 
 SEED_PATH = "wallets/mnemonic.txt"
 
@@ -33,14 +33,16 @@ def get_start_wallet(ss58: int):
     return kp
 
 
-def get_spam_wallets(ss58: int, amount: int):
+def get_spam_wallets(ss58: int, amount: int, derivation):
     logging.info(f"Spam wallets: {amount}")
     mnemonic = get_mnemonic()
     kp_list = []
     pk_list = {}
     for i in range(amount):
         kp_list.append(
-            Keypair.create_from_uri(f"{mnemonic}//spammening//{i}", ss58_format=ss58)
+            Keypair.create_from_uri(
+                f"{mnemonic}//spammening//{derivation}//{i}", ss58_format=ss58
+            )
         )
 
     for key in kp_list:
@@ -65,4 +67,32 @@ def count_funded_spam_acc(balance_list: list, wallet=None):
 
         if item["balance"]:
             cc += 1
+        # else:
+        #     logging.info(f"not funded: {acc}")
     return cc
+
+
+def tmp_fix_wallet(config: dict):
+    substr = SubstrateInterface(url=config["rpc"][0])
+    start_wallet = get_start_wallet(substr.ss58_format)
+
+    fix_wallets = [
+        "DrJ82pN6Btsaf7Nmvk7EdKSzDWcQHULXuJShFd9t47wbwD9",
+        "JCcCU9joDcwwvyZdn9FbYtGNTS29TN8zGaE9Lv22iFiKSDE",
+        "GRGBMbGmZi7LxBoddWHAZmvpZU2Mh44Y25od51Je1R9gTPS",
+        "EmV7avjJZNmYR6Uz1WrajJ7sSfuveDpvs9Nr2tPyJh14iW6",
+    ]
+
+    for wallet in fix_wallets:
+        call = substr.compose_call(
+            call_module="Balances",
+            call_function="transfer_keep_alive",
+            call_params={
+                "dest": wallet,
+                "value": config["spam_wallet_min_distr_amount"]
+                * 10**substr.token_decimals,
+            },
+        )
+
+        extrinsic = substr.create_signed_extrinsic(call=call, keypair=start_wallet)
+        substr.submit_extrinsic(extrinsic, wait_for_inclusion=True)
